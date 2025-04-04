@@ -160,3 +160,224 @@
 (define-read-only (get-paper-count)
   (var-get paper-count)
 )
+
+
+;; Add at the top with other data structures
+(define-map paper-categories 
+    { paper-id: uint }
+    { categories: (list 10 (string-ascii 64)) }
+)
+
+;; Add this public function
+(define-public (add-categories (paper-id uint) (categories (list 10 (string-ascii 64))))
+    (let (
+        (paper (unwrap! (map-get? papers { paper-id: paper-id }) (err ERR_NOT_FOUND)))
+    )
+    (asserts! (is-eq tx-sender (get author paper)) (err ERR_UNAUTHORIZED))
+    (ok (map-set paper-categories { paper-id: paper-id } { categories: categories }))
+    )
+)
+
+
+;; Add with other data structures
+(define-map paper-stats
+    { paper-id: uint }
+    { view-count: uint }
+)
+
+;; Add this public function
+(define-public (increment-views (paper-id uint))
+    (let (
+        (current-views (default-to u0 (get view-count (map-get? paper-stats { paper-id: paper-id }))))
+    )
+    (ok (map-set paper-stats 
+        { paper-id: paper-id }
+        { view-count: (+ current-views u1) }))
+    )
+)
+
+
+;; Add with other data structures
+(define-map author-reputation
+    { author: principal }
+    { 
+        total-papers: uint,
+        total-citations: uint,
+        reputation-score: uint
+    }
+)
+
+;; Add this function
+(define-public (update-author-reputation (author principal))
+    (let (
+        (current-rep (default-to { total-papers: u0, total-citations: u0, reputation-score: u0 }
+            (map-get? author-reputation { author: author })))
+    )
+    (ok (map-set author-reputation
+        { author: author }
+        (merge current-rep { reputation-score: (+ (get total-papers current-rep) 
+            (* (get total-citations current-rep) u2)) })))
+    )
+)
+
+
+
+;; Add with other data structures
+(define-map paper-keywords
+    { paper-id: uint }
+    { keywords: (list 20 (string-ascii 64)) }
+)
+
+(define-public (set-keywords (paper-id uint) (keywords (list 20 (string-ascii 64))))
+    (let (
+        (paper (unwrap! (map-get? papers { paper-id: paper-id }) (err ERR_NOT_FOUND)))
+    )
+    (asserts! (is-eq tx-sender (get author paper)) (err ERR_UNAUTHORIZED))
+    (ok (map-set paper-keywords
+        { paper-id: paper-id }
+        { keywords: keywords }))
+    )
+)
+
+
+;; Add with other data structures
+(define-map review-votes
+    { paper-id: uint, reviewer: principal, voter: principal }
+    { vote: bool }
+)
+
+(define-public (vote-on-review (paper-id uint) (reviewer principal) (upvote bool))
+    (let (
+        (review (unwrap! (map-get? reviews { paper-id: paper-id, reviewer: reviewer }) (err ERR_NOT_FOUND)))
+    )
+    (ok (map-set review-votes
+        { paper-id: paper-id, reviewer: reviewer, voter: tx-sender }
+        { vote: upvote }))
+    )
+)
+
+
+;; Add with other data structures
+(define-map paper-funding
+    { paper-id: uint }
+    { 
+        total-funds: uint,
+        funders: (list 100 principal)
+    }
+)
+
+(define-public (fund-paper (paper-id uint) (amount uint))
+    (let (
+        (paper (unwrap! (map-get? papers { paper-id: paper-id }) (err ERR_NOT_FOUND)))
+        (current-funding (default-to { total-funds: u0, funders: (list) } 
+            (map-get? paper-funding { paper-id: paper-id })))
+        (current-funders (get funders current-funding))
+    )
+    (asserts! (< (len current-funders) u100) (err u100))
+    (map-set paper-funding
+        { paper-id: paper-id }
+        { 
+            total-funds: (+ (get total-funds current-funding) amount),
+            funders: (unwrap! (as-max-len? (append current-funders tx-sender) u100) (err u101))
+        })
+    (ok true))
+)
+
+
+;; Add with other data structures
+(define-map paper-access
+    { paper-id: uint }
+    {
+        is-private: bool,
+        allowed-readers: (list 50 principal)
+    }
+)
+
+(define-public (set-paper-privacy (paper-id uint) (is-private bool) (allowed-readers (list 50 principal)))
+    (let (
+        (paper (unwrap! (map-get? papers { paper-id: paper-id }) (err ERR_NOT_FOUND)))
+    )
+    (asserts! (is-eq tx-sender (get author paper)) (err ERR_UNAUTHORIZED))
+    (ok (map-set paper-access
+        { paper-id: paper-id }
+        { 
+            is-private: is-private,
+            allowed-readers: allowed-readers
+        }))
+    )
+)
+
+
+;; Add with other data structures
+(define-map verified-institutions 
+    { institution: principal }
+    { 
+        name: (string-ascii 256),
+        verified: bool
+    }
+)
+
+(define-map author-institutions
+    { author: principal }
+    { institution: principal }
+)
+
+(define-public (link-institution (institution principal))
+    (ok (map-set author-institutions
+        { author: tx-sender }
+        { institution: institution }))
+)
+
+
+;; Add with other data structures
+(define-map paper-discussions
+    { paper-id: uint, comment-id: uint }
+    {
+        author: principal,
+        content: (string-ascii 512),
+        timestamp: uint,
+        parent-id: (optional uint)
+    }
+)
+
+(define-data-var comment-count uint u0)
+
+(define-public (add-comment (paper-id uint) (content (string-ascii 512)) (parent-id (optional uint)))
+    (let (
+        (new-id (+ (var-get comment-count) u1))
+    )
+    (var-set comment-count new-id)
+    (ok (map-set paper-discussions
+        { paper-id: paper-id, comment-id: new-id }
+        {
+            author: tx-sender,
+            content: content,
+            timestamp: stacks-block-height,
+            parent-id: parent-id
+        })))
+)
+
+
+;; Add with other data structures
+(define-map research-fields
+    { field-id: uint }
+    { 
+        name: (string-ascii 64),
+        parent-field: (optional uint)
+    }
+)
+
+(define-map paper-fields
+    { paper-id: uint }
+    { fields: (list 5 uint) }
+)
+
+(define-public (classify-paper (paper-id uint) (field-ids (list 5 uint)))
+    (let (
+        (paper (unwrap! (map-get? papers { paper-id: paper-id }) (err ERR_NOT_FOUND)))
+    )
+    (asserts! (is-eq tx-sender (get author paper)) (err ERR_UNAUTHORIZED))
+    (ok (map-set paper-fields
+        { paper-id: paper-id }
+        { fields: field-ids }))
+))
