@@ -384,3 +384,113 @@
 
 
 
+(define-map paper-versions
+    { paper-id: uint, version: uint }
+    {
+        content-hash: (string-ascii 64),
+        changes: (string-ascii 512),
+        timestamp: uint
+    }
+)
+
+(define-map paper-version-count
+    { paper-id: uint }
+    { current-version: uint }
+)
+
+(define-public (publish-new-version (paper-id uint) (content-hash (string-ascii 64)) (changes (string-ascii 512)))
+    (let
+        (
+            (paper (unwrap! (map-get? papers { paper-id: paper-id }) (err ERR_NOT_FOUND)))
+            (current-version (default-to { current-version: u0 } (map-get? paper-version-count { paper-id: paper-id })))
+            (new-version-num (+ (get current-version current-version) u1))
+        )
+        (asserts! (is-eq tx-sender (get author paper)) (err ERR_UNAUTHORIZED))
+        (map-set paper-versions
+            { paper-id: paper-id, version: new-version-num }
+            {
+                content-hash: content-hash,
+                changes: changes,
+                timestamp: stacks-block-height
+            }
+        )
+        (map-set paper-version-count
+            { paper-id: paper-id }
+            { current-version: new-version-num }
+        )
+        (ok new-version-num)
+    )
+)
+
+
+(define-map paper-collaborators
+    { paper-id: uint, author: principal }
+    {
+        role: (string-ascii 32),
+        contribution: (string-ascii 256),
+        approved: bool
+    }
+)
+
+(define-public (add-collaborator (paper-id uint) (collaborator principal) (role (string-ascii 32)) (contribution (string-ascii 256)))
+    (let
+        (
+            (paper (unwrap! (map-get? papers { paper-id: paper-id }) (err ERR_NOT_FOUND)))
+        )
+        (asserts! (is-eq tx-sender (get author paper)) (err ERR_UNAUTHORIZED))
+        (ok (map-set paper-collaborators
+            { paper-id: paper-id, author: collaborator }
+            {
+                role: role,
+                contribution: contribution,
+                approved: false
+            }
+        ))
+    )
+)
+
+(define-public (approve-collaboration (paper-id uint))
+    (let
+        (
+            (collaboration (unwrap! (map-get? paper-collaborators { paper-id: paper-id, author: tx-sender }) (err ERR_NOT_FOUND)))
+        )
+        (ok (map-set paper-collaborators
+            { paper-id: paper-id, author: tx-sender }
+            (merge collaboration { approved: true })
+        ))
+    )
+)
+
+
+(define-public (get-collaborators (paper-id uint))
+    (let
+        (
+            (collaborators (unwrap! (map-get? paper-collaborators { paper-id: paper-id, author: tx-sender }) (err ERR_NOT_FOUND)))
+        )
+        (ok collaborators)
+    )
+)
+(define-public (get-collaborator (paper-id uint) (collaborator principal))
+    (let
+        (
+            (collaboration (unwrap! (map-get? paper-collaborators { paper-id: paper-id, author: collaborator }) (err ERR_NOT_FOUND)))
+        )
+        (ok collaboration)
+    )
+)
+(define-public (get-paper-collaborators (paper-id uint))
+    (let
+        (
+            (collaborations (unwrap! (map-get? paper-collaborators { paper-id: paper-id, author: tx-sender }) (err ERR_NOT_FOUND)))
+        )
+        (ok collaborations)
+    )
+)
+(define-public (get-paper-collaborator (paper-id uint) (collaborator principal))
+    (let
+        (
+            (collaboration (unwrap! (map-get? paper-collaborators { paper-id: paper-id, author: collaborator }) (err ERR_NOT_FOUND)))
+        )
+        (ok collaboration)
+    )
+)
