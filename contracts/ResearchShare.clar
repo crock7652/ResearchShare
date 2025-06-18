@@ -93,13 +93,17 @@
       (reviewer tx-sender)
     )
     ;; Check if paper exists
-    (asserts! (is-some (map-get? papers { paper-id: paper-id })) (err ERR_NOT_FOUND))
+
+    (asserts! (is-some (map-get? papers { paper-id: paper-id })) (err u404))
     
     ;; Check if reviewer has already reviewed this paper
-    (asserts! (is-none (map-get? reviews { paper-id: paper-id, reviewer: reviewer })) (err ERR_ALREADY_REVIEWED))
-    
+
+    (asserts! (is-none (map-get? reviews { paper-id: paper-id, reviewer: reviewer })) (err u403))
+    (unwrap! (contract-call? .ReviewIncentives set-review-reward paper-id tx-sender) (err u500))
+
     ;; Check if score is valid (between 1 and 10)
-    (asserts! (and (>= score u1) (<= score u10)) (err ERR_INVALID_SCORE))
+
+    (asserts! (and (>= score u1) (<= score u10)) (err u400))
     
     ;; Add review
     (map-set reviews

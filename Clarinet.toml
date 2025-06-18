@@ -10,11 +10,15 @@ path = 'contracts/ResearchShare.clar'
 clarity_version = 3
 epoch = 3.1
 
+[contracts.ReviewIncentives]
+path = 'contracts/ReviewIncentives.clar'
+clarity_version = 3
+epoch = 3.1
+
 [contracts.citation-tracking]
 path = 'contracts/citation-tracking.clar'
 clarity_version = 3
 epoch = 3.1
-
 [repl.analysis]
 passes = ['check_checker']
 
