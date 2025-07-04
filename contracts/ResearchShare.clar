@@ -27,7 +27,40 @@
   { paper-id: uint, citing-paper-id: uint }
   { timestamp: uint }
 )
+(define-map paper-content-hashes
+    { paper-id: uint }
+    { 
+        title-hash: (string-ascii 64),
+        abstract-hash: (string-ascii 64),
+        full-content-hash: (string-ascii 64)
+    }
+)
 
+(define-map plagiarism-reports
+    { paper-id: uint, compared-paper-id: uint }
+    {
+        similarity-score: uint,
+        report-timestamp: uint,
+        detected-by: principal,
+        status: (string-ascii 32)
+    }
+)
+
+(define-map paper-plagiarism-status
+    { paper-id: uint }
+    {
+        is-flagged: bool,
+        highest-similarity: uint,
+        total-reports: uint,
+        last-check: uint
+    }
+)
+
+(define-data-var plagiarism-threshold uint u75)
+
+(define-constant ERR_INVALID_SIMILARITY u7)
+(define-constant ERR_DUPLICATE_REPORT u8)
+(define-constant ERR_INVALID_THRESHOLD u9)
 ;; Define variables
 (define-data-var paper-count uint u0)
 
@@ -116,6 +149,114 @@
     )
     (ok true)
   )
+)
+
+(define-read-only (get-review-score (paper-id uint) (reviewer principal))
+  (match (map-get? reviews { paper-id: paper-id, reviewer: reviewer })
+    review (ok (get score review))
+    (err ERR_NOT_FOUND)
+  )
+)
+(define-read-only (get-review-comment (paper-id uint) (reviewer principal))
+  (match (map-get? reviews { paper-id: paper-id, reviewer: reviewer })
+    review (ok (get comment review))
+    (err ERR_NOT_FOUND)
+  )
+)
+
+
+(define-public (store-content-hashes (paper-id uint) (title-hash (string-ascii 64)) (abstract-hash (string-ascii 64)) (full-content-hash (string-ascii 64)))
+    (let
+        (
+            (paper (unwrap! (map-get? papers { paper-id: paper-id }) (err ERR_NOT_FOUND)))
+        )
+        (asserts! (is-eq tx-sender (get author paper)) (err ERR_UNAUTHORIZED))
+        (ok (map-set paper-content-hashes
+            { paper-id: paper-id }
+            {
+                title-hash: title-hash,
+                abstract-hash: abstract-hash,
+                full-content-hash: full-content-hash
+            }
+        ))
+    )
+)
+
+(define-public (report-plagiarism (paper-id uint) (compared-paper-id uint) (similarity-score uint))
+    (let
+        (
+            (paper (unwrap! (map-get? papers { paper-id: paper-id }) (err ERR_NOT_FOUND)))
+            (compared-paper (unwrap! (map-get? papers { paper-id: compared-paper-id }) (err ERR_NOT_FOUND)))
+            (existing-report (map-get? plagiarism-reports { paper-id: paper-id, compared-paper-id: compared-paper-id }))
+            (current-status (default-to { is-flagged: false, highest-similarity: u0, total-reports: u0, last-check: u0 } 
+                (map-get? paper-plagiarism-status { paper-id: paper-id })))
+        )
+        (asserts! (not (is-eq paper-id compared-paper-id)) (err ERR_SELF_CITATION))
+        (asserts! (<= similarity-score u100) (err ERR_INVALID_SIMILARITY))
+        (asserts! (is-none existing-report) (err ERR_DUPLICATE_REPORT))
+        
+        (map-set plagiarism-reports
+            { paper-id: paper-id, compared-paper-id: compared-paper-id }
+            {
+                similarity-score: similarity-score,
+                report-timestamp: stacks-block-height,
+                detected-by: tx-sender,
+                status: (if (>= similarity-score (var-get plagiarism-threshold)) "flagged" "clean")
+            }
+        )
+        
+        (map-set paper-plagiarism-status
+            { paper-id: paper-id }
+            {
+                is-flagged: (or (get is-flagged current-status) (>= similarity-score (var-get plagiarism-threshold))),
+                highest-similarity: (if (> similarity-score (get highest-similarity current-status)) similarity-score (get highest-similarity current-status)),
+                total-reports: (+ (get total-reports current-status) u1),
+                last-check: stacks-block-height
+            }
+        )
+        
+        (ok true)
+    )
+)
+
+(define-public (update-plagiarism-threshold (new-threshold uint))
+    (begin
+        (asserts! (and (>= new-threshold u1) (<= new-threshold u100)) (err ERR_INVALID_THRESHOLD))
+        (var-set plagiarism-threshold new-threshold)
+        (ok true)
+    )
+)
+
+(define-read-only (get-plagiarism-status (paper-id uint))
+    (match (map-get? paper-plagiarism-status { paper-id: paper-id })
+        status (ok status)
+        (err ERR_NOT_FOUND)
+    )
+)
+
+(define-read-only (get-plagiarism-report (paper-id uint) (compared-paper-id uint))
+    (match (map-get? plagiarism-reports { paper-id: paper-id, compared-paper-id: compared-paper-id })
+        report (ok report)
+        (err ERR_NOT_FOUND)
+    )
+)
+
+(define-read-only (get-content-hashes (paper-id uint))
+    (match (map-get? paper-content-hashes { paper-id: paper-id })
+        hashes (ok hashes)
+        (err ERR_NOT_FOUND)
+    )
+)
+
+(define-read-only (get-current-plagiarism-threshold)
+    (var-get plagiarism-threshold)
+)
+
+(define-read-only (is-paper-flagged (paper-id uint))
+    (match (map-get? paper-plagiarism-status { paper-id: paper-id })
+        status (ok (get is-flagged status))
+        (ok false)
+    )
 )
 
 ;; Get a specific review
