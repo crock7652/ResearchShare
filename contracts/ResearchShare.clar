@@ -639,3 +639,338 @@
         (ok collaboration)
     )
 )
+
+;; Research Bounty Marketplace System
+;; Enables researchers to post problems with STX rewards for solutions
+
+;; Bounty data structures
+(define-map research-bounties
+    { bounty-id: uint }
+    {
+        creator: principal,
+        title: (string-ascii 256),
+        description: (string-ascii 1024),
+        reward-amount: uint,
+        deadline: uint,
+        status: (string-ascii 32),
+        field: (string-ascii 64),
+        difficulty: uint,
+        created-at: uint
+    }
+)
+
+(define-map bounty-submissions
+    { bounty-id: uint, submitter: principal }
+    {
+        paper-id: uint,
+        solution-description: (string-ascii 512),
+        submitted-at: uint,
+        score: uint,
+        evaluated: bool
+    }
+)
+
+(define-map bounty-evaluations
+    { bounty-id: uint, submission-id: uint }
+    {
+        evaluator: principal,
+        score: uint,
+        feedback: (string-ascii 256),
+        evaluated-at: uint
+    }
+)
+
+(define-map bounty-awards
+    { bounty-id: uint }
+    {
+        winner: principal,
+        awarded-at: uint,
+        final-score: uint,
+        total-submissions: uint
+    }
+)
+
+(define-map bounty-disputes
+    { bounty-id: uint, disputer: principal }
+    {
+        reason: (string-ascii 256),
+        status: (string-ascii 32),
+        created-at: uint,
+        resolved-at: (optional uint)
+    }
+)
+
+(define-map solver-reputation
+    { solver: principal }
+    {
+        bounties-solved: uint,
+        total-earnings: uint,
+        average-score: uint,
+        disputes-filed: uint
+    }
+)
+
+(define-map creator-reputation
+    { creator: principal }
+    {
+        bounties-created: uint,
+        total-spent: uint,
+        average-satisfaction: uint,
+        disputes-against: uint
+    }
+)
+
+;; Bounty system variables
+(define-data-var bounty-count uint u0)
+(define-data-var min-bounty-amount uint u1000000) ;; 1 STX minimum
+(define-data-var max-bounty-duration uint u52560) ;; ~1 year in blocks
+(define-data-var evaluation-period uint u2160) ;; ~15 days for evaluation
+
+;; Bounty error codes
+(define-constant ERR_INSUFFICIENT_BOUNTY u10)
+(define-constant ERR_INVALID_DEADLINE u11)
+(define-constant ERR_BOUNTY_EXPIRED u12)
+(define-constant ERR_ALREADY_SUBMITTED u13)
+(define-constant ERR_NOT_CREATOR u14)
+(define-constant ERR_BOUNTY_COMPLETED u15)
+(define-constant ERR_EVALUATION_PENDING u16)
+(define-constant ERR_INVALID_BOUNTY_SCORE u17)
+(define-constant ERR_DISPUTE_EXISTS u18)
+
+;; Create a new research bounty
+(define-public (create-bounty (title (string-ascii 256)) (description (string-ascii 1024)) (reward-amount uint) (deadline uint) (field (string-ascii 64)) (difficulty uint))
+    (let
+        (
+            (new-bounty-id (+ (var-get bounty-count) u1))
+            (current-block stacks-block-height)
+        )
+        ;; Validate bounty parameters
+        (asserts! (>= reward-amount (var-get min-bounty-amount)) (err ERR_INSUFFICIENT_BOUNTY))
+        (asserts! (> deadline current-block) (err ERR_INVALID_DEADLINE))
+        (asserts! (<= (- deadline current-block) (var-get max-bounty-duration)) (err ERR_INVALID_DEADLINE))
+        (asserts! (and (>= difficulty u1) (<= difficulty u10)) (err ERR_INVALID_BOUNTY_SCORE))
+        
+        ;; Transfer reward to contract (escrow)
+        (try! (stx-transfer? reward-amount tx-sender (as-contract tx-sender)))
+        
+        ;; Create bounty record
+        (map-set research-bounties
+            { bounty-id: new-bounty-id }
+            {
+                creator: tx-sender,
+                title: title,
+                description: description,
+                reward-amount: reward-amount,
+                deadline: deadline,
+                status: "active",
+                field: field,
+                difficulty: difficulty,
+                created-at: current-block
+            }
+        )
+        
+        ;; Update creator reputation
+        (let
+            (
+                (current-rep (default-to { bounties-created: u0, total-spent: u0, average-satisfaction: u0, disputes-against: u0 }
+                    (map-get? creator-reputation { creator: tx-sender })))
+            )
+            (map-set creator-reputation
+                { creator: tx-sender }
+                {
+                    bounties-created: (+ (get bounties-created current-rep) u1),
+                    total-spent: (+ (get total-spent current-rep) reward-amount),
+                    average-satisfaction: (get average-satisfaction current-rep),
+                    disputes-against: (get disputes-against current-rep)
+                }
+            )
+        )
+        
+        (var-set bounty-count new-bounty-id)
+        (ok new-bounty-id)
+    )
+)
+
+;; Submit a solution to a bounty
+(define-public (submit-solution (bounty-id uint) (paper-id uint) (solution-description (string-ascii 512)))
+    (let
+        (
+            (bounty (unwrap! (map-get? research-bounties { bounty-id: bounty-id }) (err ERR_NOT_FOUND)))
+            (paper (unwrap! (map-get? papers { paper-id: paper-id }) (err ERR_NOT_FOUND)))
+            (existing-submission (map-get? bounty-submissions { bounty-id: bounty-id, submitter: tx-sender }))
+        )
+        ;; Validate submission
+        (asserts! (is-eq (get status bounty) "active") (err ERR_BOUNTY_COMPLETED))
+        (asserts! (< stacks-block-height (get deadline bounty)) (err ERR_BOUNTY_EXPIRED))
+        (asserts! (is-none existing-submission) (err ERR_ALREADY_SUBMITTED))
+        (asserts! (get verified paper) (err ERR_PAPER_NOT_VERIFIED))
+        
+        ;; Create submission record
+        (map-set bounty-submissions
+            { bounty-id: bounty-id, submitter: tx-sender }
+            {
+                paper-id: paper-id,
+                solution-description: solution-description,
+                submitted-at: stacks-block-height,
+                score: u0,
+                evaluated: false
+            }
+        )
+        
+        (ok true)
+    )
+)
+
+;; Evaluate a bounty submission (creator only)
+(define-public (evaluate-submission (bounty-id uint) (submitter principal) (score uint) (feedback (string-ascii 256)))
+    (let
+        (
+            (bounty (unwrap! (map-get? research-bounties { bounty-id: bounty-id }) (err ERR_NOT_FOUND)))
+            (submission (unwrap! (map-get? bounty-submissions { bounty-id: bounty-id, submitter: submitter }) (err ERR_NOT_FOUND)))
+        )
+        ;; Validate evaluation rights
+        (asserts! (is-eq tx-sender (get creator bounty)) (err ERR_NOT_CREATOR))
+        (asserts! (>= stacks-block-height (get deadline bounty)) (err ERR_EVALUATION_PENDING))
+        (asserts! (and (>= score u1) (<= score u100)) (err ERR_INVALID_BOUNTY_SCORE))
+        
+        ;; Update submission with evaluation
+        (map-set bounty-submissions
+            { bounty-id: bounty-id, submitter: submitter }
+            (merge submission { score: score, evaluated: true })
+        )
+        
+        ;; Record evaluation details
+        (map-set bounty-evaluations
+            { bounty-id: bounty-id, submission-id: u1 }
+            {
+                evaluator: tx-sender,
+                score: score,
+                feedback: feedback,
+                evaluated-at: stacks-block-height
+            }
+        )
+        
+        (ok true)
+    )
+)
+
+;; Award bounty to winner (creator only)
+(define-public (award-bounty (bounty-id uint) (winner principal))
+    (let
+        (
+            (bounty (unwrap! (map-get? research-bounties { bounty-id: bounty-id }) (err ERR_NOT_FOUND)))
+            (submission (unwrap! (map-get? bounty-submissions { bounty-id: bounty-id, submitter: winner }) (err ERR_NOT_FOUND)))
+        )
+        ;; Validate award conditions
+        (asserts! (is-eq tx-sender (get creator bounty)) (err ERR_NOT_CREATOR))
+        (asserts! (is-eq (get status bounty) "active") (err ERR_BOUNTY_COMPLETED))
+        (asserts! (get evaluated submission) (err ERR_EVALUATION_PENDING))
+        
+        ;; Transfer reward to winner
+        (try! (as-contract (stx-transfer? (get reward-amount bounty) tx-sender winner)))
+        
+        ;; Update bounty status
+        (map-set research-bounties
+            { bounty-id: bounty-id }
+            (merge bounty { status: "completed" })
+        )
+        
+        ;; Record award
+        (map-set bounty-awards
+            { bounty-id: bounty-id }
+            {
+                winner: winner,
+                awarded-at: stacks-block-height,
+                final-score: (get score submission),
+                total-submissions: u1
+            }
+        )
+        
+        ;; Update solver reputation
+        (let
+            (
+                (current-rep (default-to { bounties-solved: u0, total-earnings: u0, average-score: u0, disputes-filed: u0 }
+                    (map-get? solver-reputation { solver: winner })))
+            )
+            (map-set solver-reputation
+                { solver: winner }
+                {
+                    bounties-solved: (+ (get bounties-solved current-rep) u1),
+                    total-earnings: (+ (get total-earnings current-rep) (get reward-amount bounty)),
+                    average-score: (/ (+ (* (get average-score current-rep) (get bounties-solved current-rep)) (get score submission)) 
+                                    (+ (get bounties-solved current-rep) u1)),
+                    disputes-filed: (get disputes-filed current-rep)
+                }
+            )
+        )
+        
+        (ok true)
+    )
+)
+
+;; File dispute against bounty decision
+(define-public (file-dispute (bounty-id uint) (reason (string-ascii 256)))
+    (let
+        (
+            (bounty (unwrap! (map-get? research-bounties { bounty-id: bounty-id }) (err ERR_NOT_FOUND)))
+            (existing-dispute (map-get? bounty-disputes { bounty-id: bounty-id, disputer: tx-sender }))
+        )
+        ;; Validate dispute conditions
+        (asserts! (is-eq (get status bounty) "completed") (err ERR_BOUNTY_COMPLETED))
+        (asserts! (is-none existing-dispute) (err ERR_DISPUTE_EXISTS))
+        
+        ;; Create dispute record
+        (map-set bounty-disputes
+            { bounty-id: bounty-id, disputer: tx-sender }
+            {
+                reason: reason,
+                status: "pending",
+                created-at: stacks-block-height,
+                resolved-at: none
+            }
+        )
+        
+        (ok true)
+    )
+)
+
+;; Read-only functions for bounty system
+
+(define-read-only (get-bounty (bounty-id uint))
+    (match (map-get? research-bounties { bounty-id: bounty-id })
+        bounty (ok bounty)
+        (err ERR_NOT_FOUND)
+    )
+)
+
+(define-read-only (get-submission (bounty-id uint) (submitter principal))
+    (match (map-get? bounty-submissions { bounty-id: bounty-id, submitter: submitter })
+        submission (ok submission)
+        (err ERR_NOT_FOUND)
+    )
+)
+
+(define-read-only (get-solver-reputation (solver principal))
+    (match (map-get? solver-reputation { solver: solver })
+        reputation (ok reputation)
+        (ok { bounties-solved: u0, total-earnings: u0, average-score: u0, disputes-filed: u0 })
+    )
+)
+
+(define-read-only (get-creator-reputation (creator principal))
+    (match (map-get? creator-reputation { creator: creator })
+        reputation (ok reputation)
+        (ok { bounties-created: u0, total-spent: u0, average-satisfaction: u0, disputes-against: u0 })
+    )
+)
+
+(define-read-only (get-bounty-count)
+    (var-get bounty-count)
+)
+
+(define-read-only (is-bounty-active (bounty-id uint))
+    (match (map-get? research-bounties { bounty-id: bounty-id })
+        bounty (ok (and (is-eq (get status bounty) "active") (< stacks-block-height (get deadline bounty))))
+        (ok false)
+    )
+)
