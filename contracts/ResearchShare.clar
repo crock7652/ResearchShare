@@ -273,6 +273,8 @@
     (
       (paper (unwrap! (map-get? papers { paper-id: paper-id }) (err ERR_NOT_FOUND)))
       (citing-paper (unwrap! (map-get? papers { paper-id: citing-paper-id }) (err ERR_NOT_FOUND)))
+    ;;   (cited-paper-fields (default-to (list "general") (get fields (map-get? paper-fields { paper-id: paper-id }))))
+    ;;   (citing-paper-fields (default-to (list "general") (get fields (map-get? paper-fields { paper-id: citing-paper-id }))))
     )
     ;; Check if citing self
     (asserts! (not (is-eq paper-id citing-paper-id)) (err ERR_SELF_CITATION))
@@ -291,6 +293,10 @@
       { paper-id: paper-id }
       (merge paper { citation-count: (+ (get citation-count paper) u1) })
     )
+    
+    ;; Update impact analytics with default field names
+    ;; (unwrap! (contract-call? .research-impact-analytics record-citation-impact 
+            ;;    paper-id citing-paper-id "general" "general") (err u500))
     
     (ok true)
   )
@@ -598,11 +604,21 @@
     (let
         (
             (collaboration (unwrap! (map-get? paper-collaborators { paper-id: paper-id, author: tx-sender }) (err ERR_NOT_FOUND)))
+            (paper (unwrap! (map-get? papers { paper-id: paper-id }) (err ERR_NOT_FOUND)))
+            (paper-author (get author paper))
+            (citation-count (get citation-count paper))
         )
-        (ok (map-set paper-collaborators
+        ;; Update collaboration record
+        (map-set paper-collaborators
             { paper-id: paper-id, author: tx-sender }
             (merge collaboration { approved: true })
-        ))
+        )
+        
+        ;; Update collaboration analytics
+        ;; (unwrap! (contract-call? .research-impact-analytics update-collaboration-metrics 
+        ;;         ;;    paper-author tx-sender citation-count) (err u500))
+        
+        (ok true)
     )
 )
 
